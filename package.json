@@ -1,0 +1,12 @@
+{
+  "name": "devbrain",
+  "private": true,
+  "workspaces": ["client", "server"],
+  "scripts": {
+    "dev:client": "npm --workspace client run dev",
+    "dev:api": "npm --workspace server run dev",
+    "build": "npm --workspace client run build && npm --workspace server run build",
+    "lint": "npm --workspace client run lint",
+    "test": "npm --workspace server run test"
+  }
+}
