@@ -5,7 +5,10 @@ import morgan from "morgan";
 import authRoutes from "./routes/auth.routes";
 import repositoryRoutes from "./routes/repository.routes";
 import conversationRoutes from "./routes/conversation.routes";
+import jobRoutes from "./routes/job.routes";
 import { rateLimit } from "./middleware/rate-limit.middleware";
+import { databaseReady } from "./db/connection";
+import { checkProviderHealth } from "./ai/provider";
 
 const app = express();
 
@@ -20,13 +23,18 @@ app.use(helmet());
 app.use(morgan("dev"));
 
 app.get("/health", (_req, res) => {
-  res.status(200).json({ status: "ok" });
+  const ready = databaseReady();
+  res.status(ready ? 200 : 503).json({ status: ready ? "ok" : "not_ready", services: { mongodb: ready ? "connected" : "disconnected" } });
 });
 
 app.use("/api", rateLimit(180, 15 * 60_000));
+app.get("/api/v1/health/ai", async (_req, res) => {
+  res.json({ ai: await checkProviderHealth() });
+});
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/repositories", repositoryRoutes);
 app.use("/api/v1/conversations", conversationRoutes);
+app.use("/api/v1/jobs", jobRoutes);
 
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const message = error instanceof Error ? error.message : "An unexpected error occurred.";
@@ -36,7 +44,7 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
     : /not found/i.test(message) ? 404
     : /valid|only public|too large|too long|between/i.test(message) ? 400
     : /rate limit/i.test(message) ? 429
-    : /needs OPENAI_API_KEY/i.test(message) ? 503
+    : /needs OPENAI_API_KEY|set to openai but|ollama|redis/i.test(message) ? 503
     : 502;
   if (status >= 500) console.error("Request failed", { status, error: message });
   res.status(status).json({ error: status >= 500 && status !== 503 ? "A required upstream service failed. Please retry shortly." : message });

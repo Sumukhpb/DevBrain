@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
+import { createEmbeddings, embeddingConfiguration, selectedProvider } from "./provider";
 
-const collectionName = process.env.QDRANT_COLLECTION ?? "devbrain_code_chunks";
-const embeddingModel = process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small";
-const dimensions = Number(process.env.OPENAI_EMBEDDING_DIMENSIONS ?? 1536);
+function activeCollectionName() {
+  // Keep vectors from different embedding models in separate collections;
+  // Qdrant collections require every vector to have the same dimension.
+  return process.env.QDRANT_COLLECTION?.trim() || (selectedProvider() === "ollama" ? "devbrain_code_chunks_ollama" : "devbrain_code_chunks");
+}
 
 export function vectorSearchConfigured() {
-  return Boolean(process.env.OPENAI_API_KEY && process.env.QDRANT_URL);
+  return Boolean(process.env.QDRANT_URL && (selectedProvider() === "ollama" || process.env.OPENAI_API_KEY));
 }
 
 function qdrantHeaders() {
@@ -21,22 +24,11 @@ function qdrantEndpoint(path: string) {
   return `${url.toString().replace(/\/$/, "")}${path}`;
 }
 
-async function openAiEmbeddings(texts: string[]) {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) throw new Error("OPENAI_API_KEY is not configured.");
-  const response = await fetch("https://api.openai.com/v1/embeddings", {
-    method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(45_000),
-    body: JSON.stringify({ model: embeddingModel, input: texts, dimensions }),
-  });
-  if (!response.ok) throw new Error(response.status === 429 ? "OpenAI rate limit reached during embedding." : `OpenAI embedding request failed (${response.status}).`);
-  const payload = await response.json() as { data?: Array<{ index: number; embedding: number[] }> };
-  const vectors = [...(payload.data ?? [])].sort((a, b) => a.index - b.index).map(({ embedding }) => embedding);
-  if (vectors.length !== texts.length || vectors.some((vector) => vector.length !== dimensions)) throw new Error("OpenAI returned embeddings with an unexpected shape.");
-  return vectors;
-}
-
 async function ensureCollection() {
-  if (!Number.isInteger(dimensions) || dimensions < 1 || dimensions > 3072) throw new Error("OPENAI_EMBEDDING_DIMENSIONS must be an integer between 1 and 3,072.");
+  const { dimensions } = embeddingConfiguration();
+  const provider = selectedProvider();
+  if (!Number.isInteger(dimensions) || dimensions < 1 || dimensions > 3072) throw new Error(`${provider === "ollama" ? "OLLAMA" : "OPENAI"}_EMBEDDING_DIMENSIONS must be an integer between 1 and 3,072.`);
+  const collectionName = activeCollectionName();
   const url = qdrantEndpoint(`/collections/${encodeURIComponent(collectionName)}`);
   const exists = await fetch(url, { headers: qdrantHeaders(), signal: AbortSignal.timeout(12_000) });
   if (exists.ok) return;
@@ -59,6 +51,7 @@ function deterministicPointId(userId: string, repositoryId: string, commitSha: s
 }
 
 async function deleteRepositoryVectors(userId: string, repositoryId: string) {
+  const collectionName = activeCollectionName();
   const response = await fetch(qdrantEndpoint(`/collections/${encodeURIComponent(collectionName)}/points/delete?wait=true`), {
     method: "POST", headers: qdrantHeaders(), signal: AbortSignal.timeout(30_000),
     body: JSON.stringify({ filter: { must: [{ key: "user_id", match: { value: userId } }, { key: "repository_id", match: { value: repositoryId } }] } }),
@@ -66,15 +59,16 @@ async function deleteRepositoryVectors(userId: string, repositoryId: string) {
   if (!response.ok) throw new Error(`Qdrant repository-vector cleanup failed (${response.status}).`);
 }
 
-export async function indexCodeChunks(userId: string, repositoryId: string, commitSha: string, chunks: VectorChunk[]) {
+export async function indexCodeChunks(userId: string, repositoryId: string, commitSha: string, chunks: VectorChunk[], onProgress?: (progress: number) => Promise<unknown> | unknown) {
   if (!vectorSearchConfigured()) return false;
   await ensureCollection();
+  const collectionName = activeCollectionName();
   await deleteRepositoryVectors(userId, repositoryId);
   const batchSize = 32;
   try {
     for (let offset = 0; offset < chunks.length; offset += batchSize) {
       const batch = chunks.slice(offset, offset + batchSize);
-      const vectors = await openAiEmbeddings(batch.map(({ text }) => text));
+      const vectors = await createEmbeddings(batch.map(({ text }) => text));
       const points = batch.map((chunk, index) => ({
         id: deterministicPointId(userId, repositoryId, commitSha, chunk), vector: vectors[index],
         payload: { user_id: userId, repository_id: repositoryId, commit_sha: commitSha, file_path: chunk.filePath, language: chunk.language, start_line: chunk.startLine, end_line: chunk.endLine, text: chunk.text },
@@ -83,6 +77,7 @@ export async function indexCodeChunks(userId: string, repositoryId: string, comm
         method: "PUT", headers: qdrantHeaders(), signal: AbortSignal.timeout(45_000), body: JSON.stringify({ points }),
       });
       if (!response.ok) throw new Error(`Qdrant vector upsert failed (${response.status}).`);
+      await onProgress?.((offset + batch.length) / Math.max(1, chunks.length));
     }
   } catch (error) {
     try { await deleteRepositoryVectors(userId, repositoryId); } catch { /* Best-effort cleanup; the next idempotent run retries it. */ }
@@ -93,7 +88,8 @@ export async function indexCodeChunks(userId: string, repositoryId: string, comm
 
 export async function searchCodeChunks(userId: string, repositoryId: string, commitSha: string, query: string) {
   await ensureCollection();
-  const [vector] = await openAiEmbeddings([query]);
+  const collectionName = activeCollectionName();
+  const [vector] = await createEmbeddings([query]);
   const response = await fetch(qdrantEndpoint(`/collections/${encodeURIComponent(collectionName)}/points/query`), {
     method: "POST", headers: qdrantHeaders(), signal: AbortSignal.timeout(20_000),
     body: JSON.stringify({ query: vector, limit: 8, with_payload: true, filter: { must: [

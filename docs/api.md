@@ -4,7 +4,9 @@ All API paths are relative to `/api/v1`, except `/health`.
 
 ## Health
 
-`GET /health` returns `200 { "status": "ok" }` when the HTTP process responds. It does not check GitHub, OpenAI, or storage availability.
+`GET /health` returns `200 { "status": "ok", "services": { "mongodb": "connected" } }` when MongoDB is connected. It returns `503` while MongoDB is unavailable. It does not check GitHub, the selected model provider, Redis, or Qdrant.
+
+`GET /api/v1/health/ai` checks whether the selected AI provider is configured. For Ollama, it checks service reachability and whether `OLLAMA_CHAT_MODEL` is installed; the check uses Ollama's model-list endpoint and does not generate text. The response includes a short diagnostic message and does not expose API keys.
 
 ## Authentication
 
@@ -20,7 +22,9 @@ All API paths are relative to `/api/v1`, except `/health`.
 { "url": "https://github.com/owner/repository", "branch": "optional-branch" }
 ```
 
-Import can take several seconds while bounded source files are fetched. A successful import returns `201` with the repository record and commit SHA. Unsupported URLs, inaccessible repositories, oversized repos, and GitHub API limits return an error response.
+The API validates the URL and enqueues work without waiting for repository files. It returns `202 { "jobId": "...", "status": "queued" }`. A separate worker fetches and indexes the source. Unsupported URL syntax fails immediately; inaccessible repositories, oversized repos, and GitHub API limits appear as a failed job after automatic retries.
+
+`GET /jobs/:jobId` returns the authenticated user's job, including its `state` and numeric `progress`. On success, the response includes a `repository`; after retry exhaustion it includes an `error`. Jobs are scoped to their owner, and another user's job ID returns `404`.
 
 `GET /repositories/:id` returns repository metadata and indexed file paths/languages, without source content.
 
@@ -28,6 +32,6 @@ Import can take several seconds while bounded source files are fetched. A succes
 
 ## Conversations
 
-`GET /conversations?repositoryId=...` returns recent conversations for a repository the current user owns. `POST /conversations` accepts `{ "repositoryId": "...", "title": "optional title" }`. `GET /conversations/:id` returns saved messages and citations. `POST /conversations/:id/messages` accepts `{ "question": "..." }`, retrieves source, generates an answer, and persists both messages. Questions must be 3–2,000 characters. OpenAI errors are surfaced without returning upstream response bodies.
+`GET /conversations?repositoryId=...` returns recent conversations for a repository the current user owns. `POST /conversations` accepts `{ "repositoryId": "...", "title": "optional title" }`. `GET /conversations/:id` returns saved messages and citations. `POST /conversations/:id/messages` accepts `{ "question": "..." }`, retrieves source, generates an answer, and persists both messages. Questions must be 3–2,000 characters. Provider errors are surfaced without returning upstream response bodies.
 
-Repository routes require a signed-in session. IDs belonging to another user return `404` to avoid disclosing that the repository exists. The API remains intended only for local development because its JSON storage does not support safe multi-process writes.
+Repository and job routes require a signed-in session. IDs belonging to another user return `404` to avoid disclosing that the resource exists. The API remains intended for local development; production deployment still needs secured database access, shared rate limiting, operational monitoring, and deployment hardening.

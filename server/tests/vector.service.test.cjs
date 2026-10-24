@@ -2,6 +2,7 @@ const { test } = require('node:test')
 const assert = require('node:assert/strict')
 
 process.env.OPENAI_API_KEY = 'test-key'
+process.env.AI_PROVIDER = 'openai'
 process.env.QDRANT_URL = 'http://qdrant.test'
 process.env.OPENAI_EMBEDDING_DIMENSIONS = '1536'
 const { indexCodeChunks, searchCodeChunks } = require('../dist/ai/vector.service.js')

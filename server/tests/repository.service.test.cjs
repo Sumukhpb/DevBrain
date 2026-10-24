@@ -33,3 +33,15 @@ test('ranks matching file paths and source terms above unrelated source', () => 
   const [unrelated] = splitIntoChunks({ path: 'src/ui/button.tsx', language: 'TypeScript React', content: 'export function Button() { return null }' })
   assert.ok(scoreChunk('Where is the auth session created?', matching) > scoreChunk('Where is the auth session created?', unrelated))
 })
+
+test('ignores filler words so unrelated text cannot match a generic question', () => {
+  const [noise] = splitIntoChunks({ path: 'package-lock.json', language: 'JSON', content: 'bcrypt is a package used for password hashing and Node versions.' })
+  assert.equal(scoreChunk('Where is the main application entry point?', noise), 0)
+})
+
+test('matches natural authentication questions to auth code and entry-point questions to index files', () => {
+  const [auth] = splitIntoChunks({ path: 'controllers/authController.js', language: 'JavaScript', content: 'function checkForAuthentication() { return true }' })
+  const [entry] = splitIntoChunks({ path: 'backend/index.js', language: 'JavaScript', content: 'const app = express(); app.listen(3000)' })
+  assert.ok(scoreChunk('How does authentication work?', auth) > 0)
+  assert.ok(scoreChunk('Where is the main application entry point?', entry) >= 2)
+})

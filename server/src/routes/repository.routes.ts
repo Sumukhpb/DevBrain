@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { requireAuth, requireRequestIntent } from "../middleware/auth.middleware";
 import { rateLimit } from "../middleware/rate-limit.middleware";
-import { getRepository, getRepositoryFile, importRepository, listRepositories } from "../services/repository.service";
+import { getRepository, getRepositoryFile, listRepositories, parseGitHubUrl } from "../services/repository.service";
+import { enqueueRepositoryImport } from "../jobs/indexing.queue";
 
 const router = Router();
 const mutationRateLimit = rateLimit(12, 60_000);
@@ -17,7 +18,11 @@ router.post("/", mutationRateLimit, requireRequestIntent, async (req, res, next)
     res.status(400).json({ error: "Provide a GitHub repository URL and an optional branch." });
     return;
   }
-  try { res.status(201).json({ repository: await importRepository(url, req.user!.id, branch) }); } catch (error) { next(error); }
+  try {
+    parseGitHubUrl(url);
+    const jobId = await enqueueRepositoryImport({ url, userId: req.user!.id, branch });
+    res.status(202).json({ jobId, status: "queued" });
+  } catch (error) { next(error); }
 });
 
 router.get("/:id", async (req, res, next) => {
