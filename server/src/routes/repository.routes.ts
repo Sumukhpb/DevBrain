@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAuth, requireRequestIntent } from "../middleware/auth.middleware";
 import { rateLimit } from "../middleware/rate-limit.middleware";
-import { getRepository, getRepositoryFile, listRepositories, parseGitHubUrl } from "../services/repository.service";
+import { deleteRepository, getRepository, getRepositoryFile, listRepositories, parseGitHubUrl } from "../services/repository.service";
 import { enqueueRepositoryImport } from "../jobs/indexing.queue";
 
 const router = Router();
@@ -36,6 +36,11 @@ router.get("/:id/files", async (req, res, next) => {
     return;
   }
   try { res.json({ file: await getRepositoryFile(String(req.params.id), filePath, req.user!.id) }); } catch (error) { next(error); }
+});
+
+router.delete("/:id", mutationRateLimit, requireRequestIntent, async (req, res, next) => {
+  try { res.json({ repository: await deleteRepository(String(req.params.id), req.user!.id) }); }
+  catch (error) { next(error); }
 });
 
 export default router;

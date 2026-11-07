@@ -45,3 +45,15 @@ test('matches natural authentication questions to auth code and entry-point ques
   assert.ok(scoreChunk('How does authentication work?', auth) > 0)
   assert.ok(scoreChunk('Where is the main application entry point?', entry) >= 2)
 })
+
+test('ranks entry-point source above generic project notes', () => {
+  const [currentEntry] = splitIntoChunks({ path: 'server/src/index.ts', language: 'TypeScript', content: 'startServer();' })
+  const [oldNotes] = splitIntoChunks({ path: 'docs/old-notes.md', language: 'Markdown', content: 'old application notes and roadmap' })
+  assert.ok(scoreChunk('Where is the main application entry point?', currentEntry) > scoreChunk('Where is the main application entry point?', oldNotes))
+})
+
+test('retrieves README and package metadata for repository overview questions', () => {
+  const [readme] = splitIntoChunks({ path: 'README.md', language: 'Markdown', content: '# Project architecture and overview' })
+  const [unrelated] = splitIntoChunks({ path: 'models/student.js', language: 'JavaScript', content: 'function calculateGrade() {}' })
+  assert.ok(scoreChunk('Give me an overview of this repository architecture', readme) > scoreChunk('Give me an overview of this repository architecture', unrelated))
+})

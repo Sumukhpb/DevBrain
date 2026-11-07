@@ -32,7 +32,9 @@ If Ollama is unavailable or its chat model is missing, the repository chat shows
 
 - Imports public GitHub repositories only. The scanner records a commit SHA, excludes common generated/dependency directories and likely secret files, skips binary or oversized files, and caps imports at 160 source files and 100 MB repository size.
 - MongoDB stores account, session, repository, conversation, and message records. Repository imports run asynchronously in a BullMQ worker with Redis job states, progress updates, and three attempts with exponential backoff. Worker concurrency is currently capped at one, so imports run serially.
-- Without Qdrant configured, retrieval is text-based. Email verification and password reset remain future work.
+- Without Qdrant configured, retrieval is text-based. Semantic retrieval filters low-scoring matches using `QDRANT_MIN_SCORE` (default `0.25`).
+- Repository pages support re-indexing a public branch, deleting a repository with its saved conversations, and cancelling imports that have not started. Active GitHub fetches are allowed to finish.
+- Email verification and password reset require an email delivery provider and remain future work. Private GitHub repositories are intentionally out of scope for this version.
 - Passwords use scrypt hashes and sessions use random HTTP-only SameSite=Strict cookies. Do not expose this development server to untrusted users or the public internet.
 - GitHub API's unauthenticated rate limit applies. Smaller repositories are recommended.
 
@@ -70,11 +72,13 @@ Remove-Item Env:MONGODB_TEST_URI
 - `GET /api/v1/repositories` — list imported repositories.
 - `POST /api/v1/repositories` — import `{ "url": "https://github.com/owner/repo", "branch": "optional" }`.
 - `GET /api/v1/jobs/:jobId` — retrieve the authenticated user's indexing job state and progress.
+- `DELETE /api/v1/jobs/:jobId` — cancel an owned import while it is still waiting in the queue.
 - `GET /api/v1/repositories/:id` — repository metadata and indexed file paths.
 - `GET /api/v1/repositories/:id/files?path=...` — retrieve an indexed source file.
+- `DELETE /api/v1/repositories/:id` — delete an owned repository, its vectors, conversations, and messages.
 
 ## Architecture
 
 The client is a React/Vite application. The Express API validates requests, authenticates users, enforces repository ownership, and queues repository import jobs in Redis. A separate worker talks to the fixed GitHub API host and stores imported revisions in MongoDB. Repository code is treated as untrusted context, never executed, and the answer prompt tells the configured model to ignore instructions found in source excerpts.
 
-See [docs/architecture.md](docs/architecture.md), [docs/api.md](docs/api.md), and [docs/decisions/0001-foundation.md](docs/decisions/0001-foundation.md). This is an incremental implementation; the production architecture in the original project brief remains future work.
+See [docs/architecture.md](docs/architecture.md), [docs/api.md](docs/api.md), and [docs/decisions/0001-foundation.md](docs/decisions/0001-foundation.md). This is a complete local development MVP. Production hosting still needs deployment-specific secrets, shared rate limiting, monitoring, backups, email delivery, and a review of database and network access controls.

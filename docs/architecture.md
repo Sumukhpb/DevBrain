@@ -24,6 +24,13 @@
 3. Return a clear no-match response when none score.
 4. Submit repository commit metadata and selected excerpts to the configured model provider, then return the model response and validated excerpt-number citations. Ollama runs locally by default; OpenAI requires `AI_PROVIDER=openai` and `OPENAI_API_KEY`.
 
-## Next architecture steps
+## Implemented MVP lifecycle and retrieval safeguards
 
-Improve job cancellation and re-indexing controls, then harden vector search and add a complete automated end-to-end test. Keep the API, worker, and client as separate processes in one modular monolith.
+- A user can re-index a public repository and the worker refreshes the same repository/branch record at the latest commit.
+- A queued or delayed import can be cancelled by its owner. Once the worker marks it active, the API returns a conflict instead of claiming to stop an in-progress GitHub fetch.
+- A user can delete an owned repository. The service removes its vectors (when Qdrant is configured), conversations, messages, and MongoDB snapshot.
+- Semantic results below `QDRANT_MIN_SCORE` (default `0.25`) are excluded before they reach the answer model. Text search removes common filler words and rejects weak matches.
+
+## Remaining work outside the local MVP
+
+Email verification and password reset need an email delivery provider. Production deployment needs environment-specific secrets, shared/distributed rate limiting, monitoring, backups, TLS, and deployment-specific database and network access controls. Private GitHub authentication is postponed. Keep the API, worker, and client as separate processes in one modular monolith.

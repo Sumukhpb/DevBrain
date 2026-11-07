@@ -21,7 +21,7 @@ export async function register(emailInput: unknown, passwordInput: unknown) {
   if (typeof emailInput !== "string" || typeof passwordInput !== "string") throw new Error("Enter an email address and password.");
   const email = emailInput.trim().toLowerCase();
   if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error("Enter a valid email address.");
-  if (passwordInput.length < 6 || passwordInput.length > 128) throw new Error("Password must be between 6 and 128 characters.");
+  if (passwordInput.length < 12 || passwordInput.length > 128) throw new Error("Password must be between 12 and 128 characters.");
   const salt = randomBytes(16).toString("hex");
   const passwordHash = (await scrypt(passwordInput, salt, 64)) as Buffer;
   const account: Account = { id: randomBytes(16).toString("hex"), email, salt, passwordHash: passwordHash.toString("hex"), createdAt: new Date().toISOString() };

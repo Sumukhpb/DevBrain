@@ -50,12 +50,13 @@ function deterministicPointId(userId: string, repositoryId: string, commitSha: s
   return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 }
 
-async function deleteRepositoryVectors(userId: string, repositoryId: string) {
+export async function deleteRepositoryVectors(userId: string, repositoryId: string) {
   const collectionName = activeCollectionName();
   const response = await fetch(qdrantEndpoint(`/collections/${encodeURIComponent(collectionName)}/points/delete?wait=true`), {
     method: "POST", headers: qdrantHeaders(), signal: AbortSignal.timeout(30_000),
     body: JSON.stringify({ filter: { must: [{ key: "user_id", match: { value: userId } }, { key: "repository_id", match: { value: repositoryId } }] } }),
   });
+  if (response.status === 404) return;
   if (!response.ok) throw new Error(`Qdrant repository-vector cleanup failed (${response.status}).`);
 }
 
@@ -100,9 +101,11 @@ export async function searchCodeChunks(userId: string, repositoryId: string, com
   });
   if (!response.ok) throw new Error(`Qdrant vector search failed (${response.status}).`);
   const payload = await response.json() as { result?: { points?: Array<{ score: number; payload?: Record<string, unknown> }> } };
+  const minimumScore = Number(process.env.QDRANT_MIN_SCORE ?? 0.25);
+  if (!Number.isFinite(minimumScore) || minimumScore < 0 || minimumScore > 1) throw new Error("QDRANT_MIN_SCORE must be a number between 0 and 1.");
   return (payload.result?.points ?? []).flatMap((point) => {
     const data = point.payload;
-    if (!data || typeof data.file_path !== "string" || typeof data.text !== "string" || typeof data.language !== "string" || typeof data.start_line !== "number" || typeof data.end_line !== "number") return [];
+    if (!Number.isFinite(point.score) || point.score < minimumScore || !data || typeof data.file_path !== "string" || typeof data.text !== "string" || typeof data.language !== "string" || typeof data.start_line !== "number" || typeof data.end_line !== "number") return [];
     return [{ filePath: data.file_path, language: data.language, startLine: data.start_line, endLine: data.end_line, text: data.text, score: point.score }];
   });
 }

@@ -34,6 +34,7 @@ after(async () => {
 
 test('registration stores a hash, creates a session, and revokes it on logout', options, async () => {
   const { register, login, getUserForSession, deleteSession } = auth
+  await assert.rejects(() => register('short@example.com', 'shortpass'), /12 and 128/)
   const session = await register('Dev@example.com', 'a long secure passphrase')
   assert.equal(session.user.email, 'dev@example.com')
   assert.equal('passwordHash' in session.user, false)

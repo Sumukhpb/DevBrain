@@ -40,7 +40,10 @@ test('search filters vector retrieval to the current user, repository, and commi
     const body = options.body ? JSON.parse(options.body) : undefined
     calls.push({ url: String(url), body })
     if (String(url).startsWith('https://api.openai.com')) return new Response(JSON.stringify({ data: [{ index: 0, embedding }] }), { status: 200 })
-    if (String(url).endsWith('/points/query')) return new Response(JSON.stringify({ result: { points: [{ score: 0.91, payload: { file_path: 'src/auth.ts', language: 'TypeScript', start_line: 3, end_line: 12, text: 'matched source' } }] } }), { status: 200 })
+    if (String(url).endsWith('/points/query')) return new Response(JSON.stringify({ result: { points: [
+      { score: 0.91, payload: { file_path: 'src/auth.ts', language: 'TypeScript', start_line: 3, end_line: 12, text: 'matched source' } },
+      { score: 0.08, payload: { file_path: 'docs/random.md', language: 'Markdown', start_line: 1, end_line: 5, text: 'weak match' } },
+    ] } }), { status: 200 })
     return new Response('{}', { status: 200 })
   }
   try {
@@ -50,5 +53,6 @@ test('search filters vector retrieval to the current user, repository, and commi
       ['user_id', 'user-2'], ['repository_id', 'repo-2'], ['commit_sha', 'commit-2'],
     ])
     assert.deepEqual(results[0], { filePath: 'src/auth.ts', language: 'TypeScript', startLine: 3, endLine: 12, text: 'matched source', score: 0.91 })
+    assert.equal(results.length, 1, 'low-scoring chunks should not be sent to the answer model')
   } finally { global.fetch = originalFetch }
 })

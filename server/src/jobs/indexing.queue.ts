@@ -43,6 +43,22 @@ export async function getRepositoryImportJob(id: string, userId: string) {
   };
 }
 
+export async function cancelRepositoryImport(id: string, userId: string) {
+  let job;
+  try { job = await queue.getJob(id); }
+  catch { throw new Error("Redis is unavailable. Start it with `docker compose up -d redis` and retry."); }
+  if (!job || job.data.userId !== userId) throw new Error("Index job not found.");
+  const state = await job.getState();
+  if (!(["waiting", "delayed", "paused", "waiting-children"] as string[]).includes(state)) {
+    throw new Error(state === "active"
+      ? "This import has already started and cannot be cancelled. Let it finish, or retry after it fails."
+      : `This import is already ${state}.`);
+  }
+  try { await job.remove(); }
+  catch { throw new Error("This import started before it could be cancelled. Let it finish, or retry after it fails."); }
+  return { id, state: "cancelled" };
+}
+
 export async function closeIndexQueue() {
   await queue.close();
 }

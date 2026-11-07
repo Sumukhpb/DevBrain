@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import './App.css'
 
@@ -52,8 +52,12 @@ function App() {
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
   const [showImport, setShowImport] = useState(false)
+  const [reindexing, setReindexing] = useState(false)
   const [importProgress, setImportProgress] = useState(0)
   const [importStatus, setImportStatus] = useState('')
+  const [activeJobId, setActiveJobId] = useState('')
+  const jobIdRef = useRef('')
+  const cancelledJobsRef = useRef(new Set<string>())
   const [aiHealth, setAiHealth] = useState<AiHealth | null>(null)
   const [aiChecking, setAiChecking] = useState(false)
   const [failedQuestion, setFailedQuestion] = useState('')
@@ -131,21 +135,66 @@ function App() {
     event.preventDefault(); setBusy(true); setError(''); setImportProgress(0); setImportStatus('')
     try {
       const { jobId } = await api<{ jobId: string }>('/repositories', { method: 'POST', body: JSON.stringify({ url, branch: branch || undefined }) })
+      jobIdRef.current = jobId; setActiveJobId(jobId)
       setImportStatus('Repository indexing queued…')
       const deadline = Date.now() + 20 * 60_000
       while (Date.now() < deadline) {
+        if (cancelledJobsRef.current.has(jobId)) { setError('Repository import cancelled.'); return }
         await new Promise((resolve) => window.setTimeout(resolve, 5000))
+        if (cancelledJobsRef.current.has(jobId)) { setError('Repository import cancelled.'); return }
         const { job } = await api<{ job: IndexJob }>(`/jobs/${jobId}`)
         if (typeof job.progress === 'number') setImportProgress(job.progress)
         if (job.state === 'waiting' || job.state === 'delayed' || job.state === 'paused') setImportStatus('Waiting for an indexing worker…')
         else if (job.state === 'active') setImportStatus('Fetching and indexing source files…')
         else if (job.state === 'failed') throw new Error(job.error || 'Repository indexing failed after retrying.')
         else if (job.state === 'completed' && job.repository) {
-          await refresh(); selectRepository(job.repository.id); setUrl(''); setBranch(''); setShowImport(false); return
+          await refresh()
+          if (reindexing && selectedId === job.repository.id) {
+            const [{ repository }, { conversations: savedConversations }] = await Promise.all([
+              api<{ repository: RepoDetail }>(`/repositories/${job.repository.id}`),
+              api<{ conversations: ConversationSummary[] }>(`/conversations?repositoryId=${encodeURIComponent(job.repository.id)}`),
+            ])
+            setDetail(repository); setFile(null); setConversations(savedConversations)
+            if (savedConversations[0]) {
+              setConversationId(savedConversations[0].id)
+              const saved = await api<{ conversation: { messages: Message[] } }>(`/conversations/${savedConversations[0].id}`)
+              setMessages(saved.conversation.messages)
+            } else { setConversationId(''); setMessages([]) }
+          } else selectRepository(job.repository.id)
+          setUrl(''); setBranch(''); setShowImport(false); return
         }
       }
       throw new Error('Indexing is taking longer than expected. The worker may still finish; check Redis and the worker terminal.')
-    } catch (e) { setError(e instanceof Error ? e.message : 'Could not import repository.') } finally { setBusy(false); setImportStatus(''); setImportProgress(0) }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not import repository.') } finally { setBusy(false); setActiveJobId(''); jobIdRef.current = ''; setImportStatus(''); setImportProgress(0); setReindexing(false) }
+  }
+
+  async function cancelImport() {
+    const jobId = jobIdRef.current
+    if (!jobId) return
+    try {
+      await api(`/jobs/${jobId}`, { method: 'DELETE' })
+      cancelledJobsRef.current.add(jobId)
+      setImportStatus('Cancelling import…')
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not cancel the import.') }
+  }
+
+  async function deleteSelectedRepository() {
+    if (!detail || !window.confirm(`Delete ${detail.fullName} and its saved conversations from this workspace?`)) return
+    setBusy(true); setError('')
+    try {
+      await api(`/repositories/${detail.id}`, { method: 'DELETE' })
+      await refresh(); selectRepository('')
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not delete repository.') }
+    finally { setBusy(false) }
+  }
+
+  function openImport() {
+    setReindexing(false); setUrl(''); setBranch(''); setError(''); setShowImport(true)
+  }
+
+  function openReindex() {
+    if (!detail) return
+    setReindexing(true); setUrl(detail.url); setBranch(detail.branch); setError(''); setShowImport(true)
   }
 
   async function handleAuth(event: FormEvent) {
@@ -225,9 +274,9 @@ function App() {
       <a className="brand" href="#home" onClick={(event) => { event.preventDefault(); selectRepository('') }}><span className="brand-mark"><Icon name="spark" size={20} /></span><span>devbrain<span className="brand-period">.</span></span></a>
       <div className="workspace-label">WORKSPACE <span className="workspace-dot" /></div>
       <button className={`nav-link ${!selectedId ? 'active' : ''}`} onClick={() => selectRepository('')}><span className="nav-glyph">⌂</span>Overview</button>
-      <div className="repo-heading"><span>YOUR REPOSITORIES</span><button aria-label="Add repository" onClick={() => setShowImport(true)}><Icon name="plus" size={16} /></button></div>
+      <div className="repo-heading"><span>YOUR REPOSITORIES</span><button aria-label="Add repository" onClick={openImport}><Icon name="plus" size={16} /></button></div>
       <div className="repo-nav-list">{repositories.map((repo) => <button key={repo.id} className={`repo-nav ${selectedId === repo.id ? 'active' : ''}`} onClick={() => selectRepository(repo.id)}><span className="repo-mini"><Icon name="github" size={14} /></span><span>{repo.fullName.split('/').pop()}</span><span className="repo-nav-count">{repo.fileCount}</span></button>)}</div>
-      <button className="add-repo-sidebar" onClick={() => setShowImport(true)}><Icon name="plus" size={15} /> Add repository</button>
+      <button className="add-repo-sidebar" onClick={openImport}><Icon name="plus" size={15} /> Add repository</button>
       <div className="sidebar-bottom"><div className="user-avatar">{user.email.slice(0, 1).toUpperCase()}</div><div className="user-copy"><strong>{user.email}</strong><span>Personal workspace</span></div><button className="signout-button" onClick={handleLogout} title="Sign out" aria-label="Sign out">↗</button></div>
     </aside>
 
@@ -237,19 +286,19 @@ function App() {
 
       {!detail ? <section className="overview-page">
         <div className="welcome-row"><div><div className="eyebrow"><span className="eyebrow-line" /> CODEBASE INTELLIGENCE</div><h1>Understand any<br /><span>codebase, faster.</span></h1><p className="welcome-description">Bring a repository into focus. Explore its structure, trace how things work, and ask questions grounded in the source.</p></div><div className="welcome-orbit"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="orbit-center"><Icon name="spark" size={28} /></div><span className="orbit-node node-a">{'{ }'}</span><span className="orbit-node node-b">⌘</span><span className="orbit-node node-c">&lt;/&gt;</span></div></div>
-        <div className="import-card"><div className="import-icon"><Icon name="github" size={22} /></div><div className="import-card-copy"><strong>Start with a GitHub repository</strong><span>Import a public repository to explore its source and ask questions.</span></div><button className="button-primary" onClick={() => setShowImport(true)}><Icon name="plus" size={17} /> Add repository</button></div>
+        <div className="import-card"><div className="import-icon"><Icon name="github" size={22} /></div><div className="import-card-copy"><strong>Start with a GitHub repository</strong><span>Import a public repository to explore its source and ask questions.</span></div><button className="button-primary" onClick={openImport}><Icon name="plus" size={17} /> Add repository</button></div>
         <div className="section-header"><div><h2>Your repositories</h2><p>Codebases in your workspace</p></div><span className="count-pill">{repositories.length} {repositories.length === 1 ? 'repository' : 'repositories'}</span></div>
         {repositories.length ? <div className="repository-grid">{repositories.map((repo) => <button className="repository-card" key={repo.id} onClick={() => selectRepository(repo.id)}><div className="repo-card-top"><span className="repo-card-icon"><Icon name="github" size={18} /></span><span className="indexed-status"><i /> {repo.vectorIndexed ? 'Semantic search' : 'Text search'}</span></div><strong>{repo.fullName}</strong><p>{repo.description || 'No repository description provided.'}</p><div className="repo-card-footer"><span><Icon name="file" size={14} /> {repo.fileCount} files</span><span><Icon name="branch" size={14} /> {repo.branch}</span><Icon name="arrow" size={16} /></div></button>)}</div> : <div className="empty-state"><div className="empty-icon"><Icon name="github" size={23} /></div><strong>Your workspace is ready</strong><span>Import a public repository to start exploring its code.</span></div>}
         <div className="how-row"><span>HOW IT WORKS</span><div><b>01</b> Import source <i /> <b>02</b> Explore files <i /> <b>03</b> Ask with context</div></div>
       </section> : <section className="repo-page">
-        <div className="repo-page-header"><div className="repo-title-row"><span className="repo-title-icon"><Icon name="github" size={20} /></span><div><div className="eyebrow">REPOSITORY</div><h1>{detail.fullName}</h1></div><a className="external-link" href={detail.url} target="_blank" rel="noreferrer" title="Open on GitHub"><Icon name="external" size={17} /></a></div><p className="repo-description">{detail.description || 'No repository description provided.'}</p><div className="repo-meta"><span className="meta-chip"><Icon name="branch" size={14} /> {detail.branch}</span><span className="meta-chip"><Icon name="file" size={14} /> {detail.fileCount} source files</span><span className="commit-meta">commit <code>{detail.commitSha.slice(0, 7)}</code></span><span className="indexed-status"><i /> Indexed</span></div></div>
+        <div className="repo-page-header"><div className="repo-title-row"><span className="repo-title-icon"><Icon name="github" size={20} /></span><div><div className="eyebrow">REPOSITORY</div><h1>{detail.fullName}</h1></div><a className="external-link" href={detail.url} target="_blank" rel="noreferrer" title="Open on GitHub"><Icon name="external" size={17} /></a><div className="repo-actions"><button onClick={openReindex} disabled={busy}>Re-index</button><button className="danger" onClick={deleteSelectedRepository} disabled={busy}>Delete</button></div></div><p className="repo-description">{detail.description || 'No repository description provided.'}</p><div className="repo-meta"><span className="meta-chip"><Icon name="branch" size={14} /> {detail.branch}</span><span className="meta-chip"><Icon name="file" size={14} /> {detail.fileCount} source files</span><span className="commit-meta">commit <code>{detail.commitSha.slice(0, 7)}</code></span><span className="indexed-status"><i /> Indexed</span></div></div>
         <div className="repo-workspace"><section className="files-panel"><div className="panel-header"><div><span className="panel-kicker">SOURCE EXPLORER</span><h2>Files <span>{detail.fileCount}</span></h2></div><Icon name="file" size={17} /></div><label className="file-search"><Icon name="search" size={15} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter files..." /></label><div className="file-list">{visibleFiles.map((item) => <button className={`file-row ${file?.path === item.path ? 'selected' : ''}`} key={item.path} onClick={() => openFile(item.path)}><span className="file-type-dot">{item.language.slice(0, 1)}</span><span title={item.path}>{item.path}</span></button>)}{!visibleFiles.length && <div className="files-empty">No files match that filter.</div>}</div></section>
-          <section className="center-panel">{file ? <><div className="viewer-header"><div><span className="panel-kicker">SOURCE FILE</span><h2>{file.path}</h2></div><span className="language-pill">{file.language}</span></div><pre className="code-viewer">{file.content.split(/\r?\n/).map((line, index) => <div className="code-line" key={index}><span>{index + 1}</span><code>{line || ' '}</code></div>)}</pre></> : <div className="chat-panel"><div className="chat-heading"><span className="ai-orb"><Icon name="spark" size={20} /></span><div><span className="panel-kicker">REPOSITORY ASSISTANT</span><h2>Ask about this codebase</h2></div><div className="conversation-controls">{aiHealth && <span className={`ai-health-pill ${aiHealth.ready ? 'ready' : 'unavailable'}`} title={aiHealth.message}>{aiHealth.provider === 'ollama' ? 'Ollama' : aiHealth.provider} {aiHealth.status === 'configured' ? 'configured' : aiHealth.ready ? 'ready' : 'unavailable'}</span>}{conversations.length > 0 && <select className="history-select" aria-label="Conversation history" value={conversationId} onChange={(event) => openConversation(event.target.value)}>{conversations.map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}</select>}<button className="new-chat-button" onClick={() => { setConversationId(''); setMessages([]); setFailedQuestion(''); setError('') }}><Icon name="plus" size={13} /> New chat</button></div></div>{aiHealth && !aiHealth.ready && <div className="ai-status-banner" role="status"><Icon name="alert" size={15} /><span>{aiHealth.message}</span><button type="button" onClick={() => { void checkAiStatus() }} disabled={aiChecking}>{aiChecking ? 'Checking…' : 'Check again'}</button></div>}<div className="chat-content">{messages.length === 0 ? <div className="chat-empty"><span className="chat-empty-icon"><Icon name="spark" size={21} /></span><h3>Curious about something?</h3><p>Ask about the architecture, a function, or how a feature works. Answers use retrieved repository files.</p><div className="suggestion-list"><button onClick={() => setQuestion('Give me an overview of this repository architecture')}>Give me an overview of the architecture <Icon name="arrow" size={14} /></button><button onClick={() => setQuestion('Where is the main application entry point?')}>Where does the app start? <Icon name="arrow" size={14} /></button><button onClick={() => setQuestion('How is configuration handled in this project?')}>How is configuration handled? <Icon name="arrow" size={14} /></button></div></div> : <div className="message-list">{messages.map((message, index) => <article className={`message ${message.role}`} key={index}><span className="message-avatar">{message.role === 'user' ? 'Y' : <Icon name="spark" size={15} />}</span><div className="message-body"><span className="message-label">{message.role === 'user' ? 'YOU' : 'DEVBRAIN'}</span><p>{message.content}</p>{message.citations?.map((citation) => <a className="citation" href={citation.url} target="_blank" rel="noreferrer" key={`${citation.filePath}:${citation.startLine}`}><Icon name="file" size={13} /> {citation.filePath}<span>L{citation.startLine}–{citation.endLine}</span><Icon name="external" size={12} /></a>)}</div></article>)}{busy && <div className="thinking"><span /><span /><span /> Searching indexed source…</div>}</div>}</div><form className="question-form" onSubmit={ask}><textarea value={question} onChange={(e) => setQuestion(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} placeholder="Ask a question about this repository..." rows={2} /><div className="question-form-bottom"><span><kbd>↵</kbd> to ask <span className="keyboard-sep">·</span> <kbd>shift ↵</kbd> new line</span><button disabled={!question.trim() || busy} aria-label="Send question"><Icon name="send" size={16} /></button></div></form></div>}</section></div>
+          <section className="center-panel">{file ? <><div className="viewer-header"><div><span className="panel-kicker">SOURCE FILE</span><h2>{file.path}</h2></div><span className="language-pill">{file.language}</span></div><pre className="code-viewer">{file.content.split(/\r?\n/).map((line, index) => <div className="code-line" key={index}><span>{index + 1}</span><code>{line || ' '}</code></div>)}</pre></> : <div className="chat-panel"><div className="chat-heading"><span className="ai-orb"><Icon name="spark" size={20} /></span><div><span className="panel-kicker">REPOSITORY ASSISTANT</span><h2>Ask about this codebase</h2></div><div className="conversation-controls">{aiHealth && <span className={`ai-health-pill ${aiHealth.ready ? 'ready' : 'unavailable'}`} title={`${aiHealth.message} This checks service/model availability, not answer quality.`}>{aiHealth.provider === 'ollama' ? 'Ollama' : aiHealth.provider} {aiHealth.status === 'configured' ? 'configured' : aiHealth.ready ? 'available' : 'unavailable'}</span>}{conversations.length > 0 && <select className="history-select" aria-label="Conversation history" value={conversationId} onChange={(event) => openConversation(event.target.value)}>{conversations.map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}</select>}<button className="new-chat-button" onClick={() => { setConversationId(''); setMessages([]); setFailedQuestion(''); setError('') }}><Icon name="plus" size={13} /> New chat</button></div></div>{aiHealth && !aiHealth.ready && <div className="ai-status-banner" role="status"><Icon name="alert" size={15} /><span>{aiHealth.message}</span><button type="button" onClick={() => { void checkAiStatus() }} disabled={aiChecking}>{aiChecking ? 'Checking…' : 'Check again'}</button></div>}<div className="chat-content">{messages.length === 0 ? <div className="chat-empty"><span className="chat-empty-icon"><Icon name="spark" size={21} /></span><h3>Curious about something?</h3><p>Ask about the architecture, a function, or how a feature works. Answers use retrieved repository files.</p><div className="suggestion-list"><button onClick={() => setQuestion('Give me an overview of this repository architecture')}>Give me an overview of the architecture <Icon name="arrow" size={14} /></button><button onClick={() => setQuestion('Where is the main application entry point?')}>Where does the app start? <Icon name="arrow" size={14} /></button><button onClick={() => setQuestion('How is configuration handled in this project?')}>How is configuration handled? <Icon name="arrow" size={14} /></button></div></div> : <div className="message-list">{messages.map((message, index) => <article className={`message ${message.role}`} key={index}><span className="message-avatar">{message.role === 'user' ? 'Y' : <Icon name="spark" size={15} />}</span><div className="message-body"><span className="message-label">{message.role === 'user' ? 'YOU' : 'DEVBRAIN'}</span><p>{message.content}</p>{message.citations?.map((citation) => <a className="citation" href={citation.url} target="_blank" rel="noreferrer" key={`${citation.filePath}:${citation.startLine}`}><Icon name="file" size={13} /> {citation.filePath}<span>L{citation.startLine}–{citation.endLine}</span><Icon name="external" size={12} /></a>)}</div></article>)}{busy && <div className="thinking"><span /><span /><span /> Searching indexed source…</div>}</div>}</div><form className="question-form" onSubmit={ask}><textarea value={question} onChange={(e) => setQuestion(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} placeholder="Ask a question about this repository..." rows={2} /><div className="question-form-bottom"><span><kbd>↵</kbd> to ask <span className="keyboard-sep">·</span> <kbd>shift ↵</kbd> new line</span><button disabled={!question.trim() || busy} aria-label="Send question"><Icon name="send" size={16} /></button></div></form></div>}</section></div>
         <div className="repo-footnote"><Icon name="alert" size={14} /> {detail.vectorIndexed ? 'Semantic retrieval is active for this repository. Answers cite the indexed commit.' : 'Text-based retrieval is active. Local Ollama can answer questions without an API key; add QDRANT_URL to enable semantic search.'}</div>
       </section>}
     </main>
 
-    {showImport && <div className="modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) setShowImport(false) }}><section className="import-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close" onClick={() => !busy && setShowImport(false)} aria-label="Close" disabled={busy}>×</button><span className="modal-icon"><Icon name="github" size={23} /></span><div className="eyebrow">ADD TO WORKSPACE</div><h2 id="modal-title">Import a repository</h2><p>Connect a public GitHub repository. DevBrain will read a bounded set of source files and record the exact revision.</p><form onSubmit={handleImport}><label>Repository URL<input autoFocus type="url" required placeholder="https://github.com/owner/repository" value={url} onChange={(e) => setUrl(e.target.value)} disabled={busy} /></label><label>Branch <span className="optional-label">OPTIONAL</span><input placeholder="Default branch" value={branch} onChange={(e) => setBranch(e.target.value)} disabled={busy} /></label><div className="import-note"><Icon name="alert" size={15} /> Public repositories only. Source files are stored in the local server data directory.</div>{importStatus && <div className="import-note" aria-live="polite"><Icon name="alert" size={15} /> {importStatus} ({importProgress}%)</div>}{error && <div className="modal-error">{error}</div>}<button className="button-primary modal-submit" disabled={busy}>{busy ? <><span className="spinner" /> {importStatus || 'Importing source…'} ({importProgress}%)</> : <>Import repository <Icon name="arrow" size={16} /></>}</button></form></section></div>}
+    {showImport && <div className="modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) setShowImport(false) }}><section className="import-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close" onClick={() => !busy && setShowImport(false)} aria-label="Close" disabled={busy}>×</button><span className="modal-icon"><Icon name="github" size={23} /></span><div className="eyebrow">ADD TO WORKSPACE</div><h2 id="modal-title">{reindexing ? 'Re-index repository' : 'Import a repository'}</h2><p>{reindexing ? 'Fetch the latest commit on this branch and refresh the indexed source.' : 'Connect a public GitHub repository. DevBrain will read a bounded set of source files and record the exact revision.'}</p><form onSubmit={handleImport}><label>Repository URL<input autoFocus type="url" required placeholder="https://github.com/owner/repository" value={url} onChange={(e) => setUrl(e.target.value)} disabled={busy} /></label><label>Branch <span className="optional-label">OPTIONAL</span><input placeholder="Default branch" value={branch} onChange={(e) => setBranch(e.target.value)} disabled={busy} /></label><div className="import-note"><Icon name="alert" size={15} /> Public repositories only. Source files are saved in your local MongoDB database.</div>{importStatus && <div className="import-note" aria-live="polite"><Icon name="alert" size={15} /> {importStatus} ({importProgress}%)</div>}{error && <div className="modal-error">{error}</div>}{busy && activeJobId && <button type="button" className="cancel-import-button" onClick={cancelImport}>Cancel queued import</button>}<button className="button-primary modal-submit" disabled={busy}>{busy ? <><span className="spinner" /> {importStatus || 'Importing source…'} ({importProgress}%)</> : <>{reindexing ? 'Re-index repository' : 'Import repository'} <Icon name="arrow" size={16} /></>}</button></form></section></div>}
   </div>
 }
 

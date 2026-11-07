@@ -26,9 +26,13 @@ The API validates the URL and enqueues work without waiting for repository files
 
 `GET /jobs/:jobId` returns the authenticated user's job, including its `state` and numeric `progress`. On success, the response includes a `repository`; after retry exhaustion it includes an `error`. Jobs are scoped to their owner, and another user's job ID returns `404`.
 
+`DELETE /jobs/:jobId` cancels a job only while it is still waiting or delayed in Redis. A job already picked up by the worker returns `409`; the GitHub fetch is allowed to finish rather than being reported as cancelled when it is still running.
+
 `GET /repositories/:id` returns repository metadata and indexed file paths/languages, without source content.
 
 `GET /repositories/:id/files?path=src%2Fmain.ts` returns the requested file from the stored commit.
+
+`DELETE /repositories/:id` deletes the owned repository, its semantic vectors when Qdrant is configured, and all conversations and messages linked to the repository. `POST /repositories` with the same repository and branch re-indexes it at the latest branch commit.
 
 ## Conversations
 
